@@ -115,29 +115,34 @@ class NestTests: XCTestCase {
     
     
     func testConcurentAccess() {
-        
+
         let item = ["item1", "item2"]
         let key = "importantObject"
-        
+
         Nest.shared.add(item: item, withKey: key, expirationPolicy: .custom(2))
-        
+
         let operation = BlockOperation()
-        
+
         operation.addExecutionBlock {
-            
+
             Nest.shared.removeItem(with: key)
         }
-        
+
         var cachedItem: [String]?
-        
+
         operation.addExecutionBlock {
-            
+
             cachedItem = Nest.shared[key] as? [String]
         }
-        
+
         operation.start()
-        
-        XCTAssert(cachedItem! == item && Nest.shared[key] == nil)
+
+        // After concurrent remove and read, the item must be gone from cache.
+        // The read may or may not have retrieved the item depending on execution order.
+        XCTAssert(Nest.shared[key] == nil)
+        if let cachedItem = cachedItem {
+            XCTAssertEqual(cachedItem, item)
+        }
     }
     
     
