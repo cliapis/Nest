@@ -111,27 +111,30 @@ public enum PersistancePolicy: RawRepresentable {
 
 // MARK:- CacheItem
 
-fileprivate class Seed: NSObject, NSCoding {
-    
+fileprivate class Seed: NSObject, NSSecureCoding {
+
+    static var supportsSecureCoding: Bool { return true }
+
     var key: String
-    
+
     var _object: Any?
     var object: Any? {
-        
+
         if let object = _object { return object }
-        
+
         if let filename = filename {
-            
+
             guard let documentsURL = Nest.documentsURL() else { return  _object }
             let fileURL = documentsURL.appendingPathComponent(filename)
-            
-            if let object = NSKeyedUnarchiver.unarchiveObject(withFile: fileURL.path) {
-                
+
+            if let data = try? Data(contentsOf: fileURL),
+               let object = try? NSKeyedUnarchiver.unarchiveTopLevelObjectWithData(data) {
+
                 _object = object
                 setExpirationDates()
             }
         }
-        
+
         return _object
     }
     
@@ -162,25 +165,25 @@ fileprivate class Seed: NSObject, NSCoding {
     // MARK: NSCoding Protocol
     
     required init?(coder aDecoder: NSCoder) {
-        
-        guard let key = aDecoder.decodeObject(forKey: "key") as? String,
-            let rawExpirationPolicy = aDecoder.decodeObject(forKey: "expirationPolicy") as? String,
+
+        guard let key = aDecoder.decodeObject(of: NSString.self, forKey: "key") as String?,
+            let rawExpirationPolicy = aDecoder.decodeObject(of: NSString.self, forKey: "expirationPolicy") as String?,
             let expirationPolicy = ExpirationPolicy(rawValue: rawExpirationPolicy),
-            let rawPersistancePolicy = aDecoder.decodeObject(forKey: "persistancePolicy") as? String,
+            let rawPersistancePolicy = aDecoder.decodeObject(of: NSString.self, forKey: "persistancePolicy") as String?,
             let persistancePolicy = PersistancePolicy(rawValue: rawPersistancePolicy)
             else { return nil }
-        
+
         self.key = key
         self.expirationPolicy = expirationPolicy
         self.persistancePolicy = persistancePolicy
-        
+
         if persistancePolicy.interval != 0 {
-            
+
             persistanceExpirationDate = Date().addingTimeInterval(persistancePolicy.interval)
         }
-        
-        if let filename = aDecoder.decodeObject(forKey: "filename") as? String {
-        
+
+        if let filename = aDecoder.decodeObject(of: NSString.self, forKey: "filename") as String? {
+
             self.filename = filename
         }
     }
@@ -198,7 +201,7 @@ fileprivate class Seed: NSObject, NSCoding {
     }
     
     
-    open func invalidateObject() {
+    func invalidateObject() {
         
         _object = nil
     }
@@ -271,8 +274,10 @@ open class Nest: NSObject {
             filename = uuid
             let fileURL = documentsURL.appendingPathComponent(uuid)
             
-            if NSKeyedArchiver.archiveRootObject(item, toFile: fileURL.path) == false {
-                
+            do {
+                let data = try NSKeyedArchiver.archivedData(withRootObject: item, requiringSecureCoding: false)
+                try data.write(to: fileURL)
+            } catch {
                 resolvedPersistPolicy = .disabled
                 filename = nil
             }
@@ -446,8 +451,10 @@ open class Nest: NSObject {
         }
         
         DispatchQueue.global(qos: DispatchQoS.QoSClass.background).async { () -> Void in
-            
-            let _ = NSKeyedArchiver.archiveRootObject(persistableContent, toFile: Nest.indexFilePath())
+
+            if let data = try? NSKeyedArchiver.archivedData(withRootObject: persistableContent, requiringSecureCoding: true) {
+                try? data.write(to: URL(fileURLWithPath: Nest.indexFilePath()))
+            }
         }
     }
     
@@ -456,7 +463,8 @@ open class Nest: NSObject {
         
         var expiredItems = [String]()
         
-        if let archivedContents = NSKeyedUnarchiver.unarchiveObject(withFile: Nest.indexFilePath()) as? [Seed] {
+        if let data = try? Data(contentsOf: URL(fileURLWithPath: Nest.indexFilePath())),
+           let archivedContents = try? NSKeyedUnarchiver.unarchivedObject(ofClasses: [NSArray.self, Seed.self, NSString.self], from: data) as? [Seed] {
             
             let now = Date()
             
