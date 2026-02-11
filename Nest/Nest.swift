@@ -55,7 +55,7 @@ public enum ExpirationPolicy: RawRepresentable {
         default:
             
             guard rawValue.hasPrefix("custom:"),
-                let interval = TimeInterval(rawValue.substring(from: rawValue.index(rawValue.startIndex, offsetBy: 7))) else {  return nil }
+                let interval = TimeInterval(String(rawValue[rawValue.index(rawValue.startIndex, offsetBy: 7)...])) else {  return nil }
             
             self = .custom(interval)
         }
@@ -225,22 +225,24 @@ fileprivate let indexFilename = "NestContents"
 
 open class Nest: NSObject {
     
-    static let shared = Nest()
+    public static let shared = Nest()
     fileprivate var storage: [String: Seed] = [:]
     
     fileprivate let queue = DispatchQueue(label: "com.nest.writeQueue")
-    
-    //fileprivate queue:
+
+    fileprivate var storageCopy: [String: Seed] {
+        return queue.sync { storage }
+    }
 
     subscript (key: String) -> Any? {
-        
-        let _storage = storage
+
+        let _storage = storageCopy
         guard let object = _storage[key]?.object else {
-            
+
             syncRemove(itemWith: key)
             return nil
         }
-        
+
         return object
     }
     
@@ -288,18 +290,21 @@ open class Nest: NSObject {
             persist()
         }
         
-        #if os(Linux)
-            
-            let _ = Timer.scheduledTimer(withTimeInterval: policy.interval, repeats: false) { (timer) in
-                
-                self.expirationTimer(timer: timer)
+        let _ = Timer.scheduledTimer(withTimeInterval: policy.interval, repeats: false) { [weak self] (_) in
+
+            guard let strongSelf = self else { return }
+            let _storage = strongSelf.storageCopy
+            guard let item = _storage[key] else { return }
+
+            if item.persistancePolicy == .disabled || item.persistancePolicy == .mirror {
+
+                strongSelf.removeItem(with: key)
             }
-            
-        #else
-            
-            let _ = Timer.scheduledTimer(timeInterval: policy.interval, target: self, selector: #selector(self.expirationTimer(timer:)), userInfo: nil, repeats: false)
-            
-        #endif
+            else {
+
+                item.invalidateObject()
+            }
+        }
     }
     
     
@@ -313,10 +318,10 @@ open class Nest: NSObject {
     
     open func removeItem(with key: String) {
         
-        let _storage = storage
+        let _storage = storageCopy
         guard let item = _storage[key] else { return }
         var needsPersistance = false
-        
+
         if item.persistancePolicy != .disabled {
             
             needsPersistance = true
@@ -349,49 +354,41 @@ open class Nest: NSObject {
     }
     
     
-    // MARK: Expiration
-    
-    internal func expirationTimer(timer: Timer) {
-        
-        let _storage = storage
-        guard let key = timer.userInfo as? String, let item = _storage[key] else { return }
-        
-        if item.persistancePolicy == .disabled || item.persistancePolicy == .mirror {
-            
-            removeItem(with: key)
-        }
-        else {
-            
-            item.invalidateObject()
-        }
-    }
-    
-    
     // MARK: Clear
     
     open func clear(ItemsOf owner: String? = nil) {
         
         guard let owner = owner else {
-            
-            storage.removeAll()
+
+            let _storage = storageCopy
+            _storage.forEach { (_, item) in
+
+                if let filename = item.filename, let documentsURL = Nest.documentsURL() {
+
+                    let fileURL = documentsURL.appendingPathComponent(filename)
+                    try? FileManager.default.removeItem(at: fileURL)
+                }
+            }
+            queue.sync { storage.removeAll() }
+            persist()
             return
         }
         
         var keysToClear = [String]()
         var needsPersistance = false
-        
-        let _storage = storage
-        
+
+        let _storage = storageCopy
+
         _storage.forEach { (key, item) in
-            
-            if item.persistancePolicy != .disabled {
-                
-                needsPersistance = true
-            }
-            
+
             if key.hasPrefix(owner) {
-                
+
                 keysToClear.append(key)
+
+                if item.persistancePolicy != .disabled {
+
+                    needsPersistance = true
+                }
             }
         }
         
@@ -411,8 +408,8 @@ open class Nest: NSObject {
         
         var keysToRemove = [String]()
         let now = Date()
-        
-        let _storage = storage
+
+        let _storage = storageCopy
         
         _storage.forEach { (key, item) in
             
@@ -437,8 +434,8 @@ open class Nest: NSObject {
     fileprivate func persist() {
         
         var persistableContent = [Seed]()
-        
-        let _storage = storage
+
+        let _storage = storageCopy
         
         _storage.forEach { (_, item) in
             
